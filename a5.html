@@ -1,0 +1,1464 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>俄羅斯方塊</title>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #111827;
+    color: white;
+    font-family: Arial, sans-serif;
+}
+
+.game {
+    display: flex;
+    gap: 24px;
+    padding: 24px;
+}
+
+canvas {
+    display: block;
+    background: #0b1020;
+    border: 3px solid #374151;
+    border-radius: 8px;
+}
+
+#board {
+    width: 300px;
+    height: 600px;
+}
+
+.side {
+    width: 190px;
+}
+
+h1 {
+    margin: 0 0 16px;
+    font-size: 28px;
+}
+
+.panel {
+    background: #1f2937;
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 14px;
+}
+
+.label {
+    color: #9ca3af;
+    font-size: 13px;
+}
+
+.value {
+    font-size: 24px;
+    font-weight: bold;
+    margin-top: 3px;
+}
+
+#next {
+    width: 140px;
+    height: 140px;
+    margin-top: 8px;
+}
+
+button {
+    width: 100%;
+    border: none;
+    border-radius: 9px;
+    padding: 11px;
+    margin-top: 8px;
+    font-size: 15px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+button:hover {
+    opacity: 0.9;
+}
+
+.controls {
+    line-height: 1.8;
+    color: #d1d5db;
+    font-size: 14px;
+}
+
+.hint {
+    color: #9ca3af;
+    font-size: 12px;
+    margin-top: 10px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="game">
+
+    <canvas id="board" width="300" height="600"></canvas>
+
+    <aside class="side">
+
+        <h1>俄羅斯方塊</h1>
+
+        <div class="panel">
+            <div class="label">分數</div>
+            <div class="value" id="score">0</div>
+        </div>
+
+        <div class="panel">
+            <div class="label">消除行數</div>
+            <div class="value" id="lines">0</div>
+        </div>
+
+        <div class="panel">
+            <div class="label">等級</div>
+            <div class="value" id="level">1</div>
+        </div>
+
+        <div class="panel">
+            <div class="label">下一個</div>
+            <canvas id="next" width="140" height="140"></canvas>
+        </div>
+
+        <button id="start">開始遊戲</button>
+        <button id="pause">暫停</button>
+
+        <div class="panel controls">
+            ← →：左右移動<br>
+            ↓：加速下降<br>
+            ↑：旋轉<br>
+            空白鍵：直接落下<br>
+            P：暫停
+
+            <div class="hint">
+                第一次操作時會啟用音效。
+            </div>
+        </div>
+
+    </aside>
+</div>
+
+
+<script>
+
+// ====================
+// 基本設定
+// ====================
+
+const COLS = 10;
+const ROWS = 20;
+const SIZE = 30;
+
+const boardCanvas = document.getElementById("board");
+const ctx = boardCanvas.getContext("2d");
+
+const nextCanvas = document.getElementById("next");
+const nextCtx = nextCanvas.getContext("2d");
+
+
+// ====================
+// 方塊顏色
+// ====================
+
+const COLORS = [
+    null,
+    "#22d3ee", // I
+    "#3b82f6", // J
+    "#f97316", // L
+    "#facc15", // O
+    "#22c55e", // S
+    "#a855f7", // T
+    "#ef4444"  // Z
+];
+
+
+// ====================
+// 七種俄羅斯方塊
+// ====================
+
+const SHAPES = [
+
+    // I
+    [
+        [1, 1, 1, 1]
+    ],
+
+    // J
+    [
+        [2, 0, 0],
+        [2, 2, 2]
+    ],
+
+    // L
+    [
+        [0, 0, 3],
+        [3, 3, 3]
+    ],
+
+    // O
+    [
+        [4, 4],
+        [4, 4]
+    ],
+
+    // S
+    [
+        [0, 5, 5],
+        [5, 5, 0]
+    ],
+
+    // T
+    [
+        [0, 6, 0],
+        [6, 6, 6]
+    ],
+
+    // Z
+    [
+        [7, 7, 0],
+        [0, 7, 7]
+    ]
+];
+
+
+// ====================
+// 遊戲變數
+// ====================
+
+let board;
+let player;
+let nextPiece;
+
+let score = 0;
+let lines = 0;
+let level = 1;
+
+let dropInterval = 800;
+let lastTime = 0;
+let dropCounter = 0;
+
+let running = false;
+let paused = false;
+let gameOver = false;
+
+
+// ====================
+// 音效系統
+// ====================
+
+let audioCtx = null;
+
+
+// 建立音效
+function initAudio() {
+
+    if (!audioCtx) {
+
+        audioCtx =
+            new (window.AudioContext ||
+            window.webkitAudioContext)();
+    }
+
+    if (audioCtx.state === "suspended") {
+        audioCtx.resume();
+    }
+}
+
+
+// 播放單一音
+function tone(
+    frequency,
+    duration = 0.08,
+    type = "square",
+    volume = 0.045,
+    delay = 0
+) {
+
+    if (!audioCtx) return;
+
+    const oscillator =
+        audioCtx.createOscillator();
+
+    const gain =
+        audioCtx.createGain();
+
+    oscillator.type = type;
+
+    oscillator.frequency.setValueAtTime(
+        frequency,
+        audioCtx.currentTime + delay
+    );
+
+    gain.gain.setValueAtTime(
+        0.0001,
+        audioCtx.currentTime + delay
+    );
+
+    gain.gain.exponentialRampToValueAtTime(
+        volume,
+        audioCtx.currentTime + delay + 0.01
+    );
+
+    gain.gain.exponentialRampToValueAtTime(
+        0.0001,
+        audioCtx.currentTime + delay + duration
+    );
+
+    oscillator.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    oscillator.start(
+        audioCtx.currentTime + delay
+    );
+
+    oscillator.stop(
+        audioCtx.currentTime +
+        delay +
+        duration +
+        0.02
+    );
+}
+
+
+// 移動音效
+function soundMove() {
+    tone(220, 0.045, "square", 0.025);
+}
+
+
+// 旋轉音效
+function soundRotate() {
+    tone(440, 0.06, "square", 0.035);
+}
+
+
+// 落下音效
+function soundDrop() {
+    tone(130, 0.07, "triangle", 0.05);
+}
+
+
+// 消除音效
+function soundLineClear(count) {
+
+    const notes =
+        count === 4
+            ? [523, 659, 784, 1047]
+            : [392, 523, 659];
+
+    notes.forEach((note, index) => {
+
+        tone(
+            note,
+            0.12,
+            "square",
+            0.055,
+            index * 0.06
+        );
+
+    });
+}
+
+
+// Game Over 音效
+function soundGameOver() {
+
+    [392, 330, 262, 196].forEach(
+        (note, index) => {
+
+            tone(
+                note,
+                0.16,
+                "sawtooth",
+                0.035,
+                index * 0.12
+            );
+
+        }
+    );
+}
+
+
+// ====================
+// 建立空白棋盤
+// ====================
+
+function createBoard() {
+
+    return Array.from(
+        { length: ROWS },
+        () => Array(COLS).fill(0)
+    );
+}
+
+
+// ====================
+// 隨機產生方塊
+// ====================
+
+function randomPiece() {
+
+    const shape =
+        SHAPES[
+            Math.floor(
+                Math.random() * SHAPES.length
+            )
+        ];
+
+    return {
+
+        matrix: shape.map(
+            row => row.slice()
+        ),
+
+        pos: {
+            x: 0,
+            y: 0
+        }
+
+    };
+}
+
+
+// ====================
+// 設定方塊初始位置
+// ====================
+
+function resetPiece(piece) {
+
+    piece.pos.y = 0;
+
+    piece.pos.x =
+        Math.floor(COLS / 2) -
+        Math.ceil(
+            piece.matrix[0].length / 2
+        );
+}
+
+
+// ====================
+// 碰撞偵測
+// ====================
+
+function collide(arena, p) {
+
+    for (
+        let y = 0;
+        y < p.matrix.length;
+        y++
+    ) {
+
+        for (
+            let x = 0;
+            x < p.matrix[y].length;
+            x++
+        ) {
+
+            if (!p.matrix[y][x]) continue;
+
+            const ax =
+                x + p.pos.x;
+
+            const ay =
+                y + p.pos.y;
+
+
+            // 撞牆或地板
+            if (
+                ax < 0 ||
+                ax >= COLS ||
+                ay >= ROWS
+            ) {
+                return true;
+            }
+
+
+            // 撞到其他方塊
+            if (
+                ay >= 0 &&
+                arena[ay][ax]
+            ) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+
+// ====================
+// 將方塊放進棋盤
+// ====================
+
+function merge(arena, p) {
+
+    p.matrix.forEach(
+        (row, y) => {
+
+            row.forEach(
+                (value, x) => {
+
+                    if (value) {
+
+                        arena[
+                            y + p.pos.y
+                        ][
+                            x + p.pos.x
+                        ] = value;
+                    }
+                }
+            );
+        }
+    );
+}
+
+
+// ====================
+// 方塊旋轉
+// ====================
+
+function rotate(matrix, dir) {
+
+    // 轉置矩陣
+    for (
+        let y = 0;
+        y < matrix.length;
+        y++
+    ) {
+
+        for (
+            let x = 0;
+            x < y;
+            x++
+        ) {
+
+            [
+                matrix[x][y],
+                matrix[y][x]
+            ] =
+            [
+                matrix[y][x],
+                matrix[x][y]
+            ];
+        }
+    }
+
+
+    // 順時針
+    if (dir > 0) {
+
+        matrix.forEach(
+            row => row.reverse()
+        );
+
+    }
+
+    // 逆時針
+    else {
+
+        matrix.reverse();
+    }
+}
+
+
+// ====================
+// 玩家旋轉
+// ====================
+
+function playerRotate(dir) {
+
+    const oldX =
+        player.pos.x;
+
+    let offset = 1;
+
+    rotate(
+        player.matrix,
+        dir
+    );
+
+
+    // 旋轉後如果碰撞
+    // 嘗試左右移動
+    while (
+        collide(board, player)
+    ) {
+
+        player.pos.x += offset;
+
+        offset =
+            -(offset +
+            (offset > 0 ? 1 : -1));
+
+
+        if (
+            Math.abs(offset) >
+            player.matrix[0].length
+        ) {
+
+            // 無法旋轉
+            rotate(
+                player.matrix,
+                -dir
+            );
+
+            player.pos.x = oldX;
+
+            return;
+        }
+    }
+
+    soundRotate();
+}
+
+
+// ====================
+// 左右移動
+// ====================
+
+function playerMove(dir) {
+
+    player.pos.x += dir;
+
+    if (
+        collide(board, player)
+    ) {
+
+        player.pos.x -= dir;
+
+    } else {
+
+        soundMove();
+    }
+}
+
+
+// ====================
+// 自然下降
+// ====================
+
+function playerDrop() {
+
+    player.pos.y++;
+
+
+    if (
+        collide(board, player)
+    ) {
+
+        player.pos.y--;
+
+        merge(
+            board,
+            player
+        );
+
+        soundDrop();
+
+        playerReset();
+
+        arenaSweep();
+    }
+
+
+    dropCounter = 0;
+}
+
+
+// ====================
+// 瞬間落下
+// ====================
+
+function hardDrop() {
+
+    let distance = 0;
+
+
+    while (
+        !collide(board, player)
+    ) {
+
+        player.pos.y++;
+
+        distance++;
+    }
+
+
+    player.pos.y--;
+
+    distance--;
+
+
+    // 落下越遠分數越多
+    score +=
+        Math.max(
+            0,
+            distance * 2
+        );
+
+
+    merge(
+        board,
+        player
+    );
+
+    soundDrop();
+
+    playerReset();
+
+    arenaSweep();
+
+    dropCounter = 0;
+
+    updateUI();
+}
+
+
+// ====================
+// 換下一個方塊
+// ====================
+
+function playerReset() {
+
+    player = nextPiece;
+
+    resetPiece(player);
+
+    nextPiece = randomPiece();
+
+
+    // 如果一生成就碰撞
+    // 代表遊戲結束
+    if (
+        collide(board, player)
+    ) {
+
+        running = false;
+
+        gameOver = true;
+
+        soundGameOver();
+
+        draw();
+
+
+        setTimeout(
+            () => {
+
+                alert(
+                    "遊戲結束！你的分數是 " +
+                    score
+                );
+
+            },
+            50
+        );
+    }
+
+
+    drawNext();
+}
+
+
+// ====================
+// 消除完整的行
+// ====================
+
+function arenaSweep() {
+
+    let rowCount = 0;
+
+
+    outer:
+    for (
+        let y = ROWS - 1;
+        y >= 0;
+        y--
+    ) {
+
+        for (
+            let x = 0;
+            x < COLS;
+            x++
+        ) {
+
+            if (
+                !board[y][x]
+            ) {
+                continue outer;
+            }
+        }
+
+
+        // 刪除這一行
+        board.splice(y, 1);
+
+
+        // 上面補一行空白
+        board.unshift(
+            Array(COLS).fill(0)
+        );
+
+
+        y++;
+
+        rowCount++;
+    }
+
+
+    if (rowCount) {
+
+        // 1、2、3、4 行分數
+        const points =
+            [0, 100, 300, 500, 800];
+
+
+        score +=
+            points[rowCount] *
+            level;
+
+
+        lines += rowCount;
+
+
+        // 每 10 行升一級
+        level =
+            Math.floor(
+                lines / 10
+            ) + 1;
+
+
+        // 等級越高速度越快
+        dropInterval =
+            Math.max(
+                100,
+                800 -
+                (level - 1) * 65
+            );
+
+
+        soundLineClear(
+            rowCount
+        );
+
+
+        updateUI();
+    }
+}
+
+
+// ====================
+// 找出幽靈方塊位置
+// ====================
+
+function ghostY() {
+
+    const oldY =
+        player.pos.y;
+
+
+    while (
+        !collide(board, player)
+    ) {
+
+        player.pos.y++;
+    }
+
+
+    player.pos.y--;
+
+
+    const result =
+        player.pos.y;
+
+
+    player.pos.y =
+        oldY;
+
+
+    return result;
+}
+
+
+// ====================
+// 畫單一方塊
+// ====================
+
+function drawCell(
+    context,
+    x,
+    y,
+    value,
+    size
+) {
+
+    if (!value) return;
+
+
+    context.fillStyle =
+        COLORS[value];
+
+    context.fillRect(
+        x * size,
+        y * size,
+        size,
+        size
+    );
+
+
+    // 邊框
+    context.strokeStyle =
+        "rgba(255,255,255,.16)";
+
+    context.strokeRect(
+        x * size + 0.5,
+        y * size + 0.5,
+        size - 1,
+        size - 1
+    );
+
+
+    // 方塊亮面
+    context.fillStyle =
+        "rgba(255,255,255,.14)";
+
+    context.fillRect(
+        x * size + 3,
+        y * size + 3,
+        size - 6,
+        4
+    );
+}
+
+
+// ====================
+// 畫矩陣
+// ====================
+
+function drawMatrix(
+    context,
+    matrix,
+    offset,
+    size,
+    alpha = 1
+) {
+
+    context.globalAlpha =
+        alpha;
+
+
+    matrix.forEach(
+        (row, y) => {
+
+            row.forEach(
+                (value, x) => {
+
+                    drawCell(
+                        context,
+                        x + offset.x,
+                        y + offset.y,
+                        value,
+                        size
+                    );
+                }
+            );
+        }
+    );
+
+
+    context.globalAlpha = 1;
+}
+
+
+// ====================
+// 畫遊戲畫面
+// ====================
+
+function draw() {
+
+    ctx.clearRect(
+        0,
+        0,
+        boardCanvas.width,
+        boardCanvas.height
+    );
+
+
+    // 畫網格
+    ctx.strokeStyle =
+        "rgba(255,255,255,.045)";
+
+    ctx.lineWidth = 1;
+
+
+    for (
+        let x = 0;
+        x <= COLS;
+        x++
+    ) {
+
+        ctx.beginPath();
+
+        ctx.moveTo(
+            x * SIZE + 0.5,
+            0
+        );
+
+        ctx.lineTo(
+            x * SIZE + 0.5,
+            ROWS * SIZE
+        );
+
+        ctx.stroke();
+    }
+
+
+    for (
+        let y = 0;
+        y <= ROWS;
+        y++
+    ) {
+
+        ctx.beginPath();
+
+        ctx.moveTo(
+            0,
+            y * SIZE + 0.5
+        );
+
+        ctx.lineTo(
+            COLS * SIZE,
+            y * SIZE + 0.5
+        );
+
+        ctx.stroke();
+    }
+
+
+    // 棋盤
+    drawMatrix(
+        ctx,
+        board,
+        { x: 0, y: 0 },
+        SIZE
+    );
+
+
+    // 幽靈方塊
+    if (
+        running &&
+        player &&
+        !paused
+    ) {
+
+        drawMatrix(
+            ctx,
+            player.matrix,
+            {
+                x: player.pos.x,
+                y: ghostY()
+            },
+            SIZE,
+            0.18
+        );
+    }
+
+
+    // 玩家方塊
+    if (player) {
+
+        drawMatrix(
+            ctx,
+            player.matrix,
+            player.pos,
+            SIZE
+        );
+    }
+
+
+    // 暫停畫面
+    if (
+        paused ||
+        (!running && !gameOver)
+    ) {
+
+        ctx.fillStyle =
+            "rgba(0,0,0,.58)";
+
+        ctx.fillRect(
+            0,
+            0,
+            boardCanvas.width,
+            boardCanvas.height
+        );
+
+
+        ctx.fillStyle = "white";
+
+        ctx.textAlign = "center";
+
+        ctx.font =
+            "bold 30px Arial";
+
+
+        ctx.fillText(
+            paused
+                ? "暫停中"
+                : "按開始遊戲",
+            boardCanvas.width / 2,
+            boardCanvas.height / 2
+        );
+    }
+}
+
+
+// ====================
+// 畫下一個方塊
+// ====================
+
+function drawNext() {
+
+    nextCtx.clearRect(
+        0,
+        0,
+        nextCanvas.width,
+        nextCanvas.height
+    );
+
+
+    if (!nextPiece) return;
+
+
+    const matrix =
+        nextPiece.matrix;
+
+    const size = 30;
+
+
+    const offsetX =
+        Math.floor(
+            (
+                nextCanvas.width / size -
+                matrix[0].length
+            ) / 2
+        );
+
+
+    const offsetY =
+        Math.floor(
+            (
+                nextCanvas.height / size -
+                matrix.length
+            ) / 2
+        );
+
+
+    drawMatrix(
+        nextCtx,
+        matrix,
+        {
+            x: offsetX,
+            y: offsetY
+        },
+        size
+    );
+}
+
+
+// ====================
+// 更新分數
+// ====================
+
+function updateUI() {
+
+    document.getElementById(
+        "score"
+    ).textContent = score;
+
+
+    document.getElementById(
+        "lines"
+    ).textContent = lines;
+
+
+    document.getElementById(
+        "level"
+    ).textContent = level;
+}
+
+
+// ====================
+// 開始遊戲
+// ====================
+
+function startGame() {
+
+    initAudio();
+
+
+    board =
+        createBoard();
+
+
+    score = 0;
+
+    lines = 0;
+
+    level = 1;
+
+    dropInterval = 800;
+
+    dropCounter = 0;
+
+    gameOver = false;
+
+    paused = false;
+
+
+    nextPiece =
+        randomPiece();
+
+
+    player =
+        randomPiece();
+
+
+    resetPiece(player);
+
+
+    playerReset();
+
+
+    running = true;
+
+
+    updateUI();
+
+
+    lastTime =
+        performance.now();
+
+
+    draw();
+}
+
+
+// ====================
+// 暫停
+// ====================
+
+function togglePause() {
+
+    if (
+        !running ||
+        gameOver
+    ) {
+        return;
+    }
+
+
+    initAudio();
+
+
+    paused =
+        !paused;
+
+
+    if (!paused) {
+
+        lastTime =
+            performance.now();
+    }
+
+
+    draw();
+}
+
+
+// ====================
+// 鍵盤控制
+// ====================
+
+document.addEventListener(
+    "keydown",
+    event => {
+
+        // 防止方向鍵讓網頁捲動
+        if (
+            [
+                "ArrowLeft",
+                "ArrowRight",
+                "ArrowDown",
+                "ArrowUp",
+                " "
+            ].includes(event.key)
+        ) {
+
+            event.preventDefault();
+        }
+
+
+        // P 暫停
+        if (
+            event.key.toLowerCase() === "p"
+        ) {
+
+            togglePause();
+
+            return;
+        }
+
+
+        if (
+            !running ||
+            paused ||
+            gameOver
+        ) {
+            return;
+        }
+
+
+        initAudio();
+
+
+        if (
+            event.key === "ArrowLeft"
+        ) {
+
+            playerMove(-1);
+
+        }
+
+        else if (
+            event.key === "ArrowRight"
+        ) {
+
+            playerMove(1);
+
+        }
+
+        else if (
+            event.key === "ArrowDown"
+        ) {
+
+            playerDrop();
+
+        }
+
+        else if (
+            event.key === "ArrowUp"
+        ) {
+
+            playerRotate(1);
+
+        }
+
+        else if (
+            event.key === " "
+        ) {
+
+            hardDrop();
+        }
+
+
+        draw();
+    }
+);
+
+
+// ====================
+// 按鈕
+// ====================
+
+document
+    .getElementById("start")
+    .addEventListener(
+        "click",
+        startGame
+    );
+
+
+document
+    .getElementById("pause")
+    .addEventListener(
+        "click",
+        togglePause
+    );
+
+
+// ====================
+// 初始化
+// ====================
+
+board =
+    createBoard();
+
+nextPiece =
+    randomPiece();
+
+player =
+    randomPiece();
+
+resetPiece(player);
+
+updateUI();
+
+draw();
+
+drawNext();
+
+
+// 遊戲主迴圈
+function update(time = 0) {
+
+    const delta =
+        time - lastTime;
+
+    lastTime = time;
+
+
+    if (
+        running &&
+        !paused
+    ) {
+
+        dropCounter += delta;
+
+
+        if (
+            dropCounter >
+            dropInterval
+        ) {
+
+            playerDrop();
+        }
+
+
+        draw();
+    }
+
+
+    requestAnimationFrame(
+        update
+    );
+}
+
+
+requestAnimationFrame(update);
+
+</script>
+
+</body>
+</html>
